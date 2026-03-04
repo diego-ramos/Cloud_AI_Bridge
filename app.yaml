@@ -1,0 +1,10 @@
+runtime: python39
+env: standard
+
+entrypoint: gunicorn -b :$PORT app:app
+
+env_variables:
+  # Replace with actual secret or use Google Secret Manager in production
+  API_KEY: 'secret-php-api-key'
+  # The GEMINI_API_KEY is usually configured securely in GCP instead of plain text here
+  # GEMINI_API_KEY: 'YOUR_GEMINI_API_KEY'
