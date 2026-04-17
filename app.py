@@ -67,7 +67,9 @@ def extract_pdf():
         You are an AI assistant that extracts structured data from customer order PDFs. 
         Please locate and extract the following fields precisely:
         - purchase_order (string): The PO number.
+        - full_delivery_address,  The full delivery address, usually the block below Ship To
         - delivery_address (string): The full delivery address (excluding zip code).
+        - delivery_address_name, first line of delivery address block, excludin label Name
         - zip_code (string): The zip code of the delivery address.
         - materials (array of objects): Each item ordered, including:
             - item_number (string): The customer ID for the item.
@@ -118,7 +120,9 @@ def extract_pdf():
             "type": "OBJECT",
             "properties": {
                 "purchase_order": {"type": "STRING", "nullable": True},
+                "full_delivery_address": {"type": "STRING", "nullable": True},
                 "delivery_address": {"type": "STRING", "nullable": True},
+                "delivery_address_name": {"type": "STRING", "nullable": True},
                 "zip_code": {"type": "STRING", "nullable": True},
                 "materials": {
                     "type": "ARRAY",
