@@ -1,7 +1,7 @@
 runtime: python39
 env: standard
 
-entrypoint: gunicorn -b :$PORT app:app
+entrypoint: gunicorn -b :$PORT main:app
 
 env_variables:
   # Replace with actual secret or use Google Secret Manager in production

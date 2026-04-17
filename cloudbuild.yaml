@@ -1,13 +1,5 @@
 steps:
-  # Step 1: Build the Docker image
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/cloud-ai-bridge', '.']
-
-  # Step 2: Push the image to Container Registry
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/cloud-ai-bridge']
-
-  # Step 3: Deploy to Cloud Functions (2nd Gen)
+  # Step 1: Deploy to Cloud Functions (2nd Gen)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: 'gcloud'
     args:
@@ -15,20 +7,14 @@ steps:
       - 'deploy'
       - 'cloud-ai-bridge'
       - '--gen2'
-      - '--region'
-      - 'us-central1'
-      - '--image'
-      - 'gcr.io/$PROJECT_ID/cloud-ai-bridge'
+      - '--region=us-central1'
+      - '--runtime=python312'
+      - '--source=.'
+      - '--entry-point=extract_pdf'
       - '--trigger-http'
       - '--allow-unauthenticated'
-      
+      - '--memory=512MiB'
+      - '--timeout=120s'
+
 options:
   logging: CLOUD_LOGGING_ONLY
-
-images:
-  - 'gcr.io/$PROJECT_ID/cloud-ai-bridge'
-
-# Substitutions allow you to override values at build time or in the trigger
-substitutions:
-  _MY_PROJECT_ID: 'your-project-id-here' # Optional: use if you want to hardcode
-
