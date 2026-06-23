@@ -10,6 +10,12 @@ ENV APP_HOME /app
 WORKDIR $APP_HOME
 COPY . ./
 
+# Install system dependencies required by PyMuPDF
+RUN apt-get update && apt-get install -y \
+    libmupdf-dev \
+    mupdf-tools \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install production dependencies.
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install gunicorn
