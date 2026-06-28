@@ -8,16 +8,31 @@ from dotenv import load_dotenv
 # Load environment variables from .env file (local development)
 load_dotenv()
 from openai import AzureOpenAI
-from google.cloud import firestore
+from azure.cosmos import CosmosClient
+from azure.cosmos.exceptions import CosmosResourceNotFoundError, CosmosHttpResponseError
 
 app = Flask(__name__)
 
-# Initialize Firestore DB globally
-try:
-    db = firestore.Client()
-except Exception as e:
-    print(f"WARNING: Failed to initialize Firestore Client. Error: {e}")
-    db = None
+# Initialize Cosmos DB globally
+COSMOS_ENDPOINT = os.environ.get('COSMOS_ENDPOINT')
+COSMOS_KEY = os.environ.get('COSMOS_KEY')
+COSMOS_DB_NAME = os.environ.get('COSMOS_DB_NAME', 'cloud_ai_bridge')
+COSMOS_CONTAINER_NAME = os.environ.get('COSMOS_CONTAINER_NAME', 'customer_instructions')
+
+db = None
+if COSMOS_ENDPOINT and COSMOS_KEY:
+    try:
+        cosmos_client = CosmosClient(COSMOS_ENDPOINT, COSMOS_KEY)
+        db = cosmos_client.get_database_client(COSMOS_DB_NAME)
+        container = db.get_container_client(COSMOS_CONTAINER_NAME)
+        # Test connection
+        list(container.read_all_items(max_item_count=1))
+        print(f"Cosmos DB connected: {COSMOS_DB_NAME}/{COSMOS_CONTAINER_NAME}")
+    except Exception as e:
+        print(f"WARNING: Failed to initialize Cosmos DB Client. Error: {e}")
+        db = None
+else:
+    print("CRITICAL: COSMOS_ENDPOINT or COSMOS_KEY environment variable is not set.")
 
 # Basic API Key authentication
 EXPECTED_API_KEY = os.environ.get('API_KEY')
@@ -137,13 +152,15 @@ def require_api_key(func):
 @require_api_key
 def get_customer_config(customer_id, arg_request=None):
     if not db:
-        return jsonify({"error": "Firestore not initialized"}), 500
+        return jsonify({"error": "Cosmos DB not initialized"}), 500
     try:
-        doc = db.collection('customer_instructions').document(customer_id).get()
-        if doc.exists:
-            return jsonify(doc.to_dict()), 200
-        else:
+        container = db.get_container_client(COSMOS_CONTAINER_NAME)
+        doc = container.read_item(item=customer_id, partition_key=customer_id)
+        return jsonify(doc), 200
+    except CosmosHttpResponseError as e:
+        if e.status_code == 404:
             return jsonify({}), 200
+        return jsonify({"error": str(e)}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -173,7 +190,7 @@ def extract_pdf(arg_request=None):
         pdf_bytes  = base64.b64decode(pdf_base64)
         customer_id       = data.get('customer_id')
         new_instructions  = data.get('new_instructions')
-        rotation_degrees  = data.get('rotate_pages', 0)
+        rotation_degrees  = data.get('rotate_pages', 0)  # Default to 0 if not provided
 
         # Build the base extraction prompt
         # Default field definitions
@@ -190,65 +207,83 @@ def extract_pdf(arg_request=None):
         # Look up or update customer-specific instructions globally
         applied_instructions = None
         if customer_id and db:
-            doc_ref = db.collection('customer_instructions').document(customer_id)
+            container = db.get_container_client(COSMOS_CONTAINER_NAME)
 
             # Always save the rotation preference
             try:
-                doc_ref.set({"rotate_pages": rotation_degrees}, merge=True)
+                # Check if document exists first
+                try:
+                    existing = container.read_item(item=customer_id, partition_key=customer_id)
+                    existing.update({"rotate_pages": rotation_degrees})
+                    container.upsert_item(existing)
+                except CosmosHttpResponseError as e:
+                    if e.status_code == 404:
+                        # Create new document
+                        container.upsert_item({"id": customer_id, "rotate_pages": rotation_degrees})
             except Exception as e:
-                print(f"Warning: Could not save rotation to Firestore: {e}")
+                print(f"Warning: Could not save rotation to Cosmos DB: {e}")
 
             # If new instructions are provided, update the DB
             if new_instructions:
                 try:
                     new_instr_dict = json.loads(new_instructions)
-                    doc_ref.set(new_instr_dict, merge=True)
-                    print(f"Saved/Updated specific field instructions in Firestore for customer: {customer_id}")
+                    new_instr_dict["id"] = customer_id
+                    try:
+                        existing = container.read_item(item=customer_id, partition_key=customer_id)
+                        existing.update(new_instr_dict)
+                        container.upsert_item(existing)
+                    except CosmosHttpResponseError as e:
+                        if e.status_code == 404:
+                            container.upsert_item(new_instr_dict)
+                    print(f"Saved/Updated specific field instructions in Cosmos DB for customer: {customer_id}")
                 except Exception as e:
-                    print(f"Warning: Could not save instructions to Firestore: {e}")
+                    print(f"Warning: Could not save instructions to Cosmos DB: {e}")
 
             # Fetch custom instructions
             try:
-                doc = doc_ref.get()
-                if doc.exists:
-                    custom_instruction = doc.to_dict()
-                    if custom_instruction and isinstance(custom_instruction, dict):
-                        applied_instructions = custom_instruction
-                        print(f"Applying custom field instructions for customer: {customer_id}")
+                custom_instruction = container.read_item(item=customer_id, partition_key=customer_id)
+                if custom_instruction and isinstance(custom_instruction, dict):
+                    applied_instructions = custom_instruction
+                    print(f"Applying custom field instructions for customer: {customer_id}")
 
-                        if 'po' in custom_instruction:
-                            raw_po = custom_instruction['po']
-                            po_override = True
-                            po_instruction = (
-                                f"CUSTOMER OVERRIDE: {raw_po}. "
-                                f"You MUST follow this instruction exactly. "
-                                f"Extract ONLY the pure numeric or alphanumeric PO code — "
-                                f"do NOT include dates, labels, or any other surrounding text in your output."
-                            )
+                    if 'po' in custom_instruction:
+                        raw_po = custom_instruction['po']
+                        po_override = True
+                        po_instruction = (
+                            f"CUSTOMER OVERRIDE: {raw_po}. "
+                            f"You MUST follow this instruction exactly. "
+                            f"Extract ONLY the pure numeric or alphanumeric PO code — "
+                            f"do NOT include dates, labels, or any other surrounding text in your output."
+                        )
 
-                        if 'address' in custom_instruction:
-                            raw_addr = custom_instruction['address']
-                            address_override = True
-                            addr_instruction = (
-                                f"CUSTOMER OVERRIDE: {raw_addr}. "
-                                f"You MUST follow this instruction strictly. "
-                                f"If it provides a hardcoded address, output exactly that address. "
-                                f"If it tells you to use a specific block on the document (like 'Supplier Address' or 'Remit To'), use that block. "
-                                f"IGNORE standard 'Ship To' or 'Delivery Address' blocks if they conflict with this instruction."
-                            )
-                            addr_name_instruction = f"the first line of the address determined by the CUSTOMER OVERRIDE above"
+                    if 'address' in custom_instruction:
+                        raw_addr = custom_instruction['address']
+                        address_override = True
+                        addr_instruction = (
+                            f"CUSTOMER OVERRIDE: {raw_addr}. "
+                            f"You MUST follow this instruction strictly. "
+                            f"If it provides a hardcoded address, output exactly that address. "
+                            f"If it tells you to use a specific block on the document (like 'Supplier Address' or 'Remit To'), use that block. "
+                            f"IGNORE standard 'Ship To' or 'Delivery Address' blocks if they conflict with this instruction."
+                        )
+                        addr_name_instruction = f"the first line of the address determined by the CUSTOMER OVERRIDE above"
 
-                        if 'materials' in custom_instruction:
-                            raw_mat = custom_instruction['materials']
-                            item_num_override = True
-                            materials_table_hint = f" CUSTOMER INSTRUCTION FOR THIS TABLE: {raw_mat}."
-                            item_num_instruction = (
-                                f"CUSTOMER OVERRIDE: {raw_mat}. "
-                                f"Follow this instruction strictly to find the item number."
-                            )
+                    if 'materials' in custom_instruction:
+                        raw_mat = custom_instruction['materials']
+                        item_num_override = True
+                        materials_table_hint = f" CUSTOMER INSTRUCTION FOR THIS TABLE: {raw_mat}."
+                        item_num_instruction = (
+                            f"CUSTOMER OVERRIDE: {raw_mat}. "
+                            f"Follow this instruction strictly to find the item number."
+                        )
+
+                    # Load saved rotate_pages if not provided in request
+                    if 'rotate_pages' in custom_instruction and rotation_degrees == 0:
+                        rotation_degrees = custom_instruction['rotate_pages']
+                        print(f"Using saved rotation from Cosmos DB: {rotation_degrees}°")
 
             except Exception as e:
-                print(f"Warning: Could not read instructions from Firestore: {e}")
+                print(f"Warning: Could not read instructions from Cosmos DB: {e}")
         elif customer_id and not db:
             print(f"WARNING: Cannot apply instructions for {customer_id} because Firestore is not initialized.")
 

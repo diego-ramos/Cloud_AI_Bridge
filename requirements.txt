@@ -1,5 +1,5 @@
 flask==3.0.3
-google-cloud-firestore
+azure-cosmos>=4.5.0
 openai>=1.30.0
 PyMuPDF>=1.24.0
 python-dotenv>=1.0.0
