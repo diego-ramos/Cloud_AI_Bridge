@@ -148,7 +148,7 @@ az containerapp show --name py-pdf-extractor --resource-group pdf-extractor --qu
 
 Your app will be available at:
 ```
-https://py-pdf-extractor.eastus.azurecontainerapps.io/extract_pdf
+https://py-pdf-extractor.ashywater-3c07aa7f.eastus.azurecontainerapps.io
 ```
 
 ---
